@@ -181,22 +181,30 @@ def draw_prediction_on_image(
     
     return img
 
-if __name__ == "__main__":
+def process_image(image_path, model_name="movenet_lightning"):
+    """
+    Process an image with MoveNet pose detection model.
+    
+    Args:
+        image_path: Path to the input image
+        model_name: Name of the MoveNet model to use
+        
+    Returns:
+        None (saves the result image to disk)
+    """
     # Load the MoveNet model
-    model_name = "movenet_lightning"
     movenet_model, input_size = load_movenet_model(model_name)
     print(f"Loaded {model_name} model with input size {input_size}")
     
-    # Load the input image.
-    image_path = 'input_image.jpeg'
+    # Load the input image
     image = tf.io.read_file(image_path)
     image = tf.image.decode_jpeg(image)
 
-    # Resize and pad the image to keep the aspect ratio and fit the expected size.
+    # Resize and pad the image to keep the aspect ratio and fit the expected size
     input_image = tf.expand_dims(image, axis=0)
     input_image = tf.image.resize_with_pad(input_image, input_size, input_size)
 
-    # Run model inference.
+    # Run model inference
     keypoints_with_scores = movenet_model(input_image)
     
     # Print keypoints to see the results
@@ -205,7 +213,7 @@ if __name__ == "__main__":
         if score > 0.2:
             print(f"Keypoint {i}: score = {score:.2f}")
 
-    # Visualize the predictions with image.
+    # Visualize the predictions with image
     display_image = tf.expand_dims(image, axis=0)
     display_image = tf.cast(tf.image.resize_with_pad(display_image, 1280, 1280), dtype=tf.int32)
     
@@ -219,3 +227,135 @@ if __name__ == "__main__":
     plt.close()
     
     print("Detection complete! Result saved as 'pose_detection_result.png'")
+
+    """Runs model inference on the cropped region.
+
+    Args:
+      movenet_model: The MoveNet model function.
+      image: A TF.Tensor with shape [height, width, 3] representing the image.
+      crop_region: A dictionary that defines the crop region.
+      crop_size: A list of two integers [height, width] specifying the size to crop.
+
+    Returns:
+      A numpy array with shape [1, 1, 17, 3] representing the predicted keypoints.
+    """
+    image_height, image_width, _ = image.shape
+    
+    # Crop the image
+    y_min, x_min, y_max, x_max = (
+        crop_region['y_min'], crop_region['x_min'], 
+        crop_region['y_max'], crop_region['x_max']
+    )
+    
+    # Ensure crop coordinates are within image boundaries
+    y_min = max(0, y_min)
+    x_min = max(0, x_min)
+    y_max = min(image_height, y_max)
+    x_max = min(image_width, x_max)
+    
+    # Crop and resize the image
+    cropped = image[y_min:y_max, x_min:x_max, :]
+    cropped_shape = cropped.shape
+    
+    if cropped_shape[0] == 0 or cropped_shape[1] == 0:
+        # Invalid crop region, use the entire image
+        cropped = image
+    
+    resized = tf.image.resize_with_pad(
+        tf.expand_dims(cropped, axis=0), crop_size[0], crop_size[1])
+    
+    # Run model inference
+    keypoints_with_scores = movenet_model(resized)
+    
+    # Adjust keypoint coordinates to the original image
+    for idx in range(17):
+        keypoints_with_scores[0, 0, idx, 0] = (
+            crop_region['y_min'] + crop_region['height'] * 
+            keypoints_with_scores[0, 0, idx, 0]) / image_height
+        keypoints_with_scores[0, 0, idx, 1] = (
+            crop_region['x_min'] + crop_region['width'] * 
+            keypoints_with_scores[0, 0, idx, 1]) / image_width
+    
+    return keypoints_with_scores
+    
+
+def process_video(video_path, model_name="movenet_lightning", output_path="pose_detection_result.gif"):
+    """
+    Process a video with MoveNet pose detection model by slicing it into frames,
+    processing each frame individually, and reassembling into a video.
+    
+    Args:
+        video_path: Path to the input video/gif
+        model_name: Name of the MoveNet model to use
+        output_path: Path to save the output gif
+        
+    Returns:
+        None (saves the result as a gif)
+    """
+    # Load the MoveNet model
+    movenet_model, input_size = load_movenet_model(model_name)
+    print(f"Loaded {model_name} model with input size {input_size}")
+    
+    # Load the input video using OpenCV
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise ValueError(f"Error opening video file {video_path}")
+    
+    # Get video dimensions and frame count
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    print(f"Processing video with {frame_count} frames")
+    
+    # Process each frame
+    output_images = []
+    frame_idx = 0
+    
+    while cap.isOpened():
+        # Read the next frame
+        success, frame = cap.read()
+        if not success:
+            break
+        
+        # Convert BGR to RGB (OpenCV uses BGR by default)
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        
+        # Convert to tensor
+        frame_tensor = tf.convert_to_tensor(frame_rgb)
+        
+        # Resize and pad the image to keep the aspect ratio and fit the expected size
+        input_image = tf.expand_dims(frame_tensor, axis=0)
+        input_image = tf.image.resize_with_pad(input_image, input_size, input_size)
+
+        # Run model inference
+        keypoints_with_scores = movenet_model(input_image)
+        
+        # Visualize the predictions with image
+        display_image = tf.expand_dims(frame_tensor, axis=0)
+        display_image = tf.cast(tf.image.resize_with_pad(display_image, 1280, 1280), dtype=tf.int32)
+        
+        output_overlay = draw_prediction_on_image(
+            np.squeeze(display_image.numpy(), axis=0), 
+            keypoints_with_scores,
+            close_figure=True,
+            output_image_height=300)
+        
+        output_images.append(output_overlay)
+        
+        # Print progress
+        if frame_idx % 10 == 0:
+            print(f"Processed {frame_idx}/{frame_count} frames")
+            
+        frame_idx += 1
+    
+    # Release the video capture
+    cap.release()
+    
+    # Create and save the output gif
+    print("Creating output gif...")
+    imageio.mimsave(output_path, output_images, duration=100/1000.0)
+    
+    print(f"Detection complete! Result saved as '{output_path}'")
+
+
+if __name__ == "__main__":
+    # For video processing
+    process_video('tik.mp4')
