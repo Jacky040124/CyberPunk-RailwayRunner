@@ -6,11 +6,11 @@ import time
 from collections import deque
 import pyautogui
 
-# Load MoveNet model from TensorFlow Hub
 module = hub.load("https://tfhub.dev/google/movenet/singlepose/thunder/4")
 movenet = module.signatures['serving_default']
 
-# Full-body skeleton connections (including right arm)
+
+# Initialization
 KEYPOINT_EDGES = { 
     (0, 1): (255, 0, 0),   # Nose → Left Eye
     (0, 2): (0, 0, 255),   # Nose → Right Eye
@@ -32,7 +32,6 @@ KEYPOINT_EDGES = {
     (14, 16): (0, 255, 255) # Right Knee → Right Ankle
 }
 
-# Labels for each keypoint
 BODY_PARTS = [
     "Nose", "Left Eye", "Right Eye", "Left Ear", "Right Ear",
     "Left Shoulder", "Right Shoulder", "Left Elbow", "Right Elbow",
@@ -40,12 +39,10 @@ BODY_PARTS = [
     "Left Knee", "Right Knee", "Left Ankle", "Right Ankle"
 ]
 
-# Right arm tracking for chop detection
 RIGHT_ARM_PARTS = {
     "right_shoulder": 6, "right_elbow": 8, "right_wrist": 10
 }
 
-# Enhanced motion history tracking without maxlen limits
 motion_history = {
     "right_wrist": [],     # Store all positions
     "right_elbow": [],
@@ -58,63 +55,45 @@ motion_history = {
     "actions": []          # Record detected actions with timestamps
 }
 
-chop_count = 0
-jump_count = 0
-
-# Game state variables
+# Global Parameters
 game_running = True
-
-# Remove squat_cooldown and is_squatting from global variables
-global chop_cooldown, jump_cooldown
-chop_cooldown = 0
+jump_count = 0
 jump_cooldown = 0
-
-# Add this constant near the other globals at the top of the file
 JUMP_SENSITIVITY = 0.05  # Adjust this value to change jump detection sensitivity (lower = more sensitive)
+SQUAT_SENSITIVITY = 0.05  # Adjust for sensitivity (lower = more sensitive)
+LEFT_MOVE_SENSITIVITY = 0.05  # Percentage of frame width (lower = more sensitive)
+RIGHT_MOVE_SENSITIVITY = 0.05  # Percentage of frame width (lower = more sensitive)
 
-# Add these near the other globals
-WAVE_DETECTION_THRESHOLD = 15  # Pixel threshold for detecting hand wave
-SQUAT_SENSITIVITY = 0.07  # Adjust for sensitivity (lower = more sensitive)
 left_move_count = 0
 right_move_count = 0
 down_move_count = 0
 left_move_cooldown = 0
 right_move_cooldown = 0
 down_move_cooldown = 0
+
 is_squatting = False
 
-def detect_pose(frame):
-    """Run MoveNet on a single frame and return keypoints."""
-    input_image = tf.image.resize_with_pad(np.expand_dims(frame, axis=0), 256, 256)
-    input_image = tf.cast(input_image, dtype=tf.int32)
-    outputs = movenet(input_image)
-    keypoints = outputs['output_0'].numpy()
-    return keypoints
-
-def count_chops(keypoints):
-    """Detect up-and-down chopping motion and count chops using right wrist."""
-    global motion_history, chop_count
-    height, width = 480, 640  # Frame dimensions
-
-    # Extract right wrist position
-    right_wrist = keypoints[0, 0, RIGHT_ARM_PARTS["right_wrist"], :2]  # (y, x)
-    right_wrist_y = right_wrist[0] * height  # Convert normalized value to pixels
-
-    # Store right wrist position for motion tracking
-    motion_history["right_wrist"].append(right_wrist_y)
-
-    # Detect chop motion based on recent movement
-    if len(motion_history["right_wrist"]) > 5:
-        prev_wrist_y = motion_history["right_wrist"][-5]  # Compare with an earlier position
-        if prev_wrist_y - right_wrist_y > 30:  # Moving down fast
-            chop_count += 1
-            action_time = time.time()
-            motion_history["actions"].append(f"{action_time:.2f}: Chop detected (#{chop_count})")
-            print(f"Chops: {chop_count}")
-            
-            # Simulate a keyboard press for jump using pyautogui
-            pyautogui.press('space')
-            print("Jump triggered!")
+def update_motion_history(keypoints, frame_height, frame_width):
+    """Update comprehensive motion history with all key body parts."""
+    # Record positions of key body parts
+    # Left arm
+    left_shoulder = keypoints[0, 0, 5, :2]
+    left_elbow = keypoints[0, 0, 7, :2]
+    left_wrist = keypoints[0, 0, 9, :2]
+    
+    # Right arm
+    right_shoulder = keypoints[0, 0, 6, :2]
+    right_elbow = keypoints[0, 0, 8, :2]
+    right_wrist = keypoints[0, 0, 10, :2]
+    
+    # Store positions (convert from normalized to pixel coordinates)
+    motion_history["left_shoulder"].append((left_shoulder[1] * frame_width, left_shoulder[0] * frame_height))
+    motion_history["left_elbow"].append((left_elbow[1] * frame_width, left_elbow[0] * frame_height))
+    motion_history["left_wrist"].append((left_wrist[1] * frame_width, left_wrist[0] * frame_height))
+    
+    motion_history["right_shoulder"].append((right_shoulder[1] * frame_width, right_shoulder[0] * frame_height))
+    motion_history["right_elbow"].append((right_elbow[1] * frame_width, right_elbow[0] * frame_height))
+    motion_history["right_wrist"].append((right_wrist[1] * frame_width, right_wrist[0] * frame_height))
 
 def detect_jump(keypoints, frame_height):
     global jump_count, jump_cooldown
@@ -153,28 +132,7 @@ def detect_jump(keypoints, frame_height):
                 pyautogui.press('up')
                 print(f"Jump detected! Count: {jump_count}")
 
-def update_motion_history(keypoints, frame_height, frame_width):
-    """Update comprehensive motion history with all key body parts."""
-    # Record positions of key body parts
-    # Left arm
-    left_shoulder = keypoints[0, 0, 5, :2]
-    left_elbow = keypoints[0, 0, 7, :2]
-    left_wrist = keypoints[0, 0, 9, :2]
-    
-    # Right arm
-    right_shoulder = keypoints[0, 0, 6, :2]
-    right_elbow = keypoints[0, 0, 8, :2]
-    right_wrist = keypoints[0, 0, 10, :2]
-    
-    # Store positions (convert from normalized to pixel coordinates)
-    motion_history["left_shoulder"].append((left_shoulder[1] * frame_width, left_shoulder[0] * frame_height))
-    motion_history["left_elbow"].append((left_elbow[1] * frame_width, left_elbow[0] * frame_height))
-    motion_history["left_wrist"].append((left_wrist[1] * frame_width, left_wrist[0] * frame_height))
-    
-    motion_history["right_shoulder"].append((right_shoulder[1] * frame_width, right_shoulder[0] * frame_height))
-    motion_history["right_elbow"].append((right_elbow[1] * frame_width, right_elbow[0] * frame_height))
-    motion_history["right_wrist"].append((right_wrist[1] * frame_width, right_wrist[0] * frame_height))
-
+# Detection Logic
 def draw_skeleton_and_labels(frame, keypoints, threshold=0.3):
     """Draw the entire body skeleton and add labels."""
     height, width, _ = frame.shape
@@ -195,13 +153,20 @@ def draw_skeleton_and_labels(frame, keypoints, threshold=0.3):
             cv2.line(frame, points[p1], points[p2], color, 2)
 
     # Update the game information overlay to include all movement counts
-    cv2.putText(frame, f"Chops: {chop_count}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-    cv2.putText(frame, f"Jumps: {jump_count}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-    cv2.putText(frame, f"Left: {left_move_count}", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-    cv2.putText(frame, f"Right: {right_move_count}", (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-    cv2.putText(frame, f"Down: {down_move_count}", (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+    cv2.putText(frame, f"Jumps: {jump_count}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+    cv2.putText(frame, f"Left: {left_move_count}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+    cv2.putText(frame, f"Right: {right_move_count}", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+    cv2.putText(frame, f"Down: {down_move_count}", (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
     
     return frame
+
+def detect_pose(frame):
+    """Run MoveNet on a single frame and return keypoints."""
+    input_image = tf.image.resize_with_pad(np.expand_dims(frame, axis=0), 256, 256)
+    input_image = tf.cast(input_image, dtype=tf.int32)
+    outputs = movenet(input_image)
+    keypoints = outputs['output_0'].numpy()
+    return keypoints
 
 def detect_right_movement(keypoints, frame_width, frame_height):
     """Detect when user moves to their right (appears as leftward movement in camera)."""
@@ -234,8 +199,8 @@ def detect_right_movement(keypoints, frame_width, frame_height):
             # Current position (average of last few frames to reduce noise)
             current_x = sum([pos[0] for pos in recent_positions[-3:]]) / 3
             
-            # Define movement threshold (how far shoulders need to move to trigger)
-            movement_threshold = frame_width * 0.06  # 6% of frame width
+            # Define movement threshold using the sensitivity constant
+            movement_threshold = frame_width * RIGHT_MOVE_SENSITIVITY
             
             # When user moves to their right, they appear to move left in camera
             # So we check for decreasing x value
@@ -277,8 +242,8 @@ def detect_left_movement(keypoints, frame_width, frame_height):
             # Current position (average of last few frames to reduce noise)
             current_x = sum([pos[0] for pos in recent_positions[-3:]]) / 3
             
-            # Define movement threshold (how far shoulders need to move to trigger)
-            movement_threshold = frame_width * 0.06  # 6% of frame width
+            # Define movement threshold using the sensitivity constant
+            movement_threshold = frame_width * LEFT_MOVE_SENSITIVITY
             
             # When user moves to their left, they appear to move right in camera
             # So we check for increasing x value
@@ -289,47 +254,58 @@ def detect_left_movement(keypoints, frame_width, frame_height):
                 pyautogui.press('left')  # Press left key when user moves left
                 print(f"Left movement detected! Count: {left_move_count}")
 
-def detect_squat(keypoints, frame_height):
-    """Detect squatting motion for downward movement."""
+def detect_clap_for_squat(keypoints, frame_width, frame_height):
+    """Detect hand clap motion to trigger squat action."""
     global down_move_count, down_move_cooldown, is_squatting
     
-    # Get hip positions
-    left_hip_y = keypoints[0, 0, 11, 0] * frame_height   # Left hip
-    right_hip_y = keypoints[0, 0, 12, 0] * frame_height  # Right hip
+    # Get wrist positions
+    left_wrist_x = keypoints[0, 0, 9, 1] * frame_width   # Left wrist, x coordinate
+    left_wrist_y = keypoints[0, 0, 9, 0] * frame_height  # Left wrist, y coordinate
+    right_wrist_x = keypoints[0, 0, 10, 1] * frame_width  # Right wrist, x coordinate
+    right_wrist_y = keypoints[0, 0, 10, 0] * frame_height  # Right wrist, y coordinate
     
-    # Calculate hip center position
-    hip_center_y = (left_hip_y + right_hip_y) / 2 if left_hip_y > 0 and right_hip_y > 0 else None
-    
-    # Store hip center position
-    if hip_center_y is not None:
-        if "hip_center_y" not in motion_history:
-            motion_history["hip_center_y"] = []
-        motion_history["hip_center_y"].append(hip_center_y)
-    
-    # Process squat detection
-    current_time = time.time()
-    if down_move_cooldown < current_time and hip_center_y is not None:
-        if "hip_center_y" in motion_history and len(motion_history["hip_center_y"]) >= 10:
-            # Calculate baseline (standing position) from earlier frames
-            baseline = sum(motion_history["hip_center_y"][-10:-5]) / 5
+    # Calculate distance between wrists
+    if left_wrist_x > 0 and right_wrist_x > 0:  # Make sure both wrists are detected
+        wrist_distance = np.sqrt((left_wrist_x - right_wrist_x)**2 + (left_wrist_y - right_wrist_y)**2)
+        
+        # Store wrist distance with timestamp
+        current_time = time.time()
+        if "wrist_distance" not in motion_history:
+            motion_history["wrist_distance"] = []
+        motion_history["wrist_distance"].append((wrist_distance, current_time))
+        
+        # Only proceed if we have enough data and not in cooldown
+        if len(motion_history["wrist_distance"]) >= 10 and down_move_cooldown < current_time:
+            # Get recent distances (within last 1 second)
+            recent_distances = [dist for dist, t in motion_history["wrist_distance"][-15:] 
+                               if current_time - t < 1.0]
             
-            # Current position (average of last few frames to reduce noise)
-            current_pos = sum(motion_history["hip_center_y"][-3:]) / 3
-            
-            # Detect squatting (hip position lower than baseline)
-            if not is_squatting and current_pos > baseline + (SQUAT_SENSITIVITY * frame_height):
-                is_squatting = True
-                down_move_count += 1
-                motion_history["actions"].append(f"{current_time:.2f}: Squat detected (#{down_move_count})")
-                down_move_cooldown = current_time + 1.0  # 1 second cooldown
-                pyautogui.press('down')
-                print(f"Squat detected! Count: {down_move_count}")
-            
-            # Reset squatting state when user stands back up
-            elif is_squatting and current_pos < baseline + (SQUAT_SENSITIVITY * frame_height * 0.5):
-                is_squatting = False
+            if len(recent_distances) >= 5:
+                # Calculate baseline distance from earlier frames
+                baseline_distance = sum(recent_distances[:5]) / 5
+                
+                # Current distance (average of last few frames to reduce noise)
+                current_distance = sum(recent_distances[-3:]) / 3
+                
+                # Define clap threshold (how close hands need to be to trigger)
+                # Typically hands are shoulder-width apart, so we detect when they're much closer
+                clap_threshold = baseline_distance * 0.4  # 40% of normal distance
+                
+                # Detect clap (hands coming close together)
+                if not is_squatting and current_distance < clap_threshold:
+                    is_squatting = True
+                    down_move_count += 1
+                    motion_history["actions"].append(f"{current_time:.2f}: Clap (squat) detected (#{down_move_count})")
+                    down_move_cooldown = current_time + 1.0  # 1 second cooldown
+                    pyautogui.press('down')
+                    print(f"Clap (squat) detected! Count: {down_move_count}")
+                
+                # Reset squatting state when hands move apart again
+                elif is_squatting and current_distance > baseline_distance * 0.7:
+                    is_squatting = False
 
-# Open webcam - Try multiple camera indices if needed
+
+# Script Logic
 camera_index = 0
 max_attempts = 3
 
@@ -350,7 +326,7 @@ if not cap.isOpened():
     exit()
 
 # Create window
-cv2.namedWindow('Chopping Tree Game')
+cv2.namedWindow('Tree Game')
 
 while cap.isOpened() and game_running:
     ret, frame = cap.read()
@@ -367,16 +343,15 @@ while cap.isOpened() and game_running:
     frame_height, frame_width = frame.shape[:2]
     update_motion_history(keypoints, frame_height, frame_width)
 
-    # Detect chopping motion and count chops
-    count_chops(keypoints)
-
     # Detect jump motions using the hip center
     detect_jump(keypoints, frame_height)
 
     # Separate left and right movement detection
     detect_left_movement(keypoints, frame_width, frame_height)
     detect_right_movement(keypoints, frame_width, frame_height)
-    detect_squat(keypoints, frame_height)
+    
+    # Replace squat detection with clap detection for down movement
+    detect_clap_for_squat(keypoints, frame_width, frame_height)
 
     # Draw full body skeleton with labels and display counts
     frame = draw_skeleton_and_labels(frame, keypoints)
@@ -408,7 +383,6 @@ for action in motion_history["actions"]:
 
 # Update final summary to include all movement counts
 print("\n--- Game Summary ---")
-print(f"Final Chop Count: {chop_count}")
 print(f"Final Jump Count: {jump_count}")
 print(f"Final Left Movement Count: {left_move_count}")
 print(f"Final Right Movement Count: {right_move_count}")
